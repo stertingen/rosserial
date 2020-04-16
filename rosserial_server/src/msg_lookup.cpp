@@ -27,15 +27,38 @@
  * Please send comments, questions, or patches to code@clearpathrobotics.com
  */
 
+#include <regex>
+#include <stdexcept>
+#include <string>
+#include <system_error>
+#include <unordered_map>
+
+#include <boost/process.hpp>
+
 #include "rosserial_server/msg_lookup.h"
-#include "Python.h"
 
 namespace rosserial_server
 {
 
-const MsgInfo lookupMessage(const std::string& message_type, const std::string submodule)
+// See https://wiki.ros.org/Names
+static const std::regex valid_name{"^[A-Za-z][A-Za-z0-9_]*$"};
+
+static std::unordered_map<std::string, MsgInfo> lookup_cache;
+
+MsgInfo lookupMessage(const std::string& message_type, const std::string& submodule)
 {
-  MsgInfo msginfo;
+  if (submodule != "msg" && submodule != "srv")
+  {
+    throw std::invalid_argument("Only \"msg\" and \"srv\" are supported as submodule!");
+  }
+
+  // A cache miss will construct a MsgInfo object and return a reference to it.
+  MsgInfo& cache_entry = lookup_cache[message_type];
+  if (!cache_entry.md5sum.empty())
+  {
+    return cache_entry;
+  }
+
   size_t slash_pos = message_type.find('/');
   if (slash_pos == std::string::npos)
   {
@@ -44,47 +67,47 @@ const MsgInfo lookupMessage(const std::string& message_type, const std::string s
   std::string module_name = message_type.substr(0, slash_pos);
   std::string class_name = message_type.substr(slash_pos + 1, std::string::npos);
 
-  // For now we initialize and finalize for each message. It's quick to do and avoids
-  // an initialized Python interpreter hanging around for the duration of the execution.
-  Py_Initialize();
-  PyObject* module = PyImport_ImportModule((module_name + "." + submodule).c_str());
-  if (!module)
+  // Sanitize input, we don't want anyone to mess with our python interpreter.
+  if (!regex_match(module_name, valid_name) || !regex_match(class_name, valid_name))
   {
-    Py_Finalize();
-    throw std::runtime_error("Unable to import message module " + module_name + ".");
+    throw std::runtime_error("Message type name is invalid!");
   }
-  PyObject* msg_class = PyObject_GetAttrString(module, class_name.c_str());
-  if (!msg_class)
+
+  // Spawn single subprocess that prints both MD5 sum and full text.
+  std::string py_script = "from " + module_name + "." + submodule + " import " + class_name + " as MsgType;";
+  py_script += " print(MsgType._md5sum); print(MsgType._full_text);";
+
+  boost::process::ipstream output;
+  boost::process::child proc{PYTHON_EXECUTABLE, "-c", py_script, boost::process::std_out > output};
+
+  MsgInfo msginfo;
+  if (!std::getline(output, msginfo.md5sum))
   {
-    Py_Finalize();
-    throw std::runtime_error("Unable to find message class " + class_name +
-                             " in module " + module_name + ".");
+    throw std::runtime_error("Could not fetch MD5 checksum.");
   }
-  Py_XDECREF(module);
-
-  PyObject* full_text = PyObject_GetAttrString(msg_class, "_full_text");
-  PyObject* md5sum = PyObject_GetAttrString(msg_class, "_md5sum");
-  if (!md5sum)
+  std::string line;
+  while (std::getline(output, line))
   {
-    Py_Finalize();
-    throw std::runtime_error("Class for message " + message_type + " did not contain" +
-                             "expected _md5sum attribute.");
+    msginfo.full_text.append(line);
   }
-  Py_XDECREF(msg_class);
 
-#if PY_VERSION_HEX > 0x03000000
-  full_text = full_text ? full_text : PyUnicode_New(0, 0);
-  msginfo.full_text.assign(PyUnicode_AsUTF8(full_text));
-  msginfo.md5sum.assign(PyUnicode_AsUTF8(md5sum));
-#else
-  full_text = full_text ? full_text : PyString_FromString("");
-  msginfo.full_text.assign(PyString_AsString(full_text));
-  msginfo.md5sum.assign(PyString_AsString(md5sum));
-#endif
-  Py_XDECREF(full_text);
-  Py_XDECREF(md5sum);
-  Py_Finalize();
+  // TODO: Implement some timeout mechanism
+  std::error_code error;
+  proc.wait(error);
+  if (error)
+  {
+    throw std::runtime_error("Message type lookup returned with error: " + error.message());
+  }
 
+  // See https://github.com/ros/ros_comm/issues/344 and https://github.com/ros/gencpp/pull/14
+  // At this point, we can assume that the message definition is in fact empty and insert an empty line to suppress
+  // further warnings.
+  if (msginfo.full_text.empty())
+  {
+    msginfo.full_text = "\n";
+  }
+
+  cache_entry = msginfo;
   return msginfo;
 }
 

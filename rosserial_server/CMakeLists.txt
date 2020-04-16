@@ -13,8 +13,6 @@ find_package(Boost REQUIRED COMPONENTS
   thread
 )
 
-find_package(PythonLibs REQUIRED)
-
 catkin_package(
   INCLUDE_DIRS include
   CATKIN_DEPENDS
@@ -32,8 +30,8 @@ include_directories(
 )
 
 add_library(${PROJECT_NAME}_lookup src/msg_lookup.cpp)
-target_link_libraries(${PROJECT_NAME}_lookup ${PYTHON_LIBRARY})
-target_include_directories(${PROJECT_NAME}_lookup SYSTEM PRIVATE ${PYTHON_INCLUDE_DIR})
+target_link_libraries(${PROJECT_NAME}_lookup ${Boost_EXPORTED_TARGETS})
+target_compile_definitions(${PROJECT_NAME}_lookup PRIVATE "-DPYTHON_EXECUTABLE=\"${PYTHON_EXECUTABLE}\"")
 
 add_executable(${PROJECT_NAME}_serial_node src/serial_node.cpp)
 target_link_libraries(${PROJECT_NAME}_serial_node ${catkin_LIBRARIES} ${PROJECT_NAME}_lookup)

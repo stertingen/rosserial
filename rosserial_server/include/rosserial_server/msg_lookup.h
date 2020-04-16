@@ -28,7 +28,6 @@
  */
 
 #include <string>
-#include <stdexcept>
 
 namespace rosserial_server
 {
@@ -39,6 +38,6 @@ struct MsgInfo
   std::string full_text;
 };
 
-const MsgInfo lookupMessage(const std::string& message_type, const std::string submodule = "msg");
+MsgInfo lookupMessage(const std::string& message_type, const std::string& submodule = "msg");
 
 }  // namespace rosserial_server
